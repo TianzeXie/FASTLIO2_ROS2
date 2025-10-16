@@ -20,14 +20,17 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <yaml-cpp/yaml.h>
-
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 using namespace std::chrono_literals;
 struct NodeConfig
 {
     std::string imu_topic = "/livox/imu";
     std::string lidar_topic = "/livox/lidar";
-    std::string body_frame = "body";
-    std::string world_frame = "lidar";
+    std::string body_frame = "base_link";
+    std::string world_frame = "lidar_odom";
     bool print_time_cost = false;
 };
 struct StateData
@@ -56,7 +59,7 @@ public:
         m_body_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("body_cloud", 10000);
         m_world_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("world_cloud", 10000);
         m_path_pub = this->create_publisher<nav_msgs::msg::Path>("lio_path", 10000);
-        m_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("lio_odom", 10000);
+        m_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 10000);
         m_tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
         m_state_data.path.poses.clear();
@@ -65,6 +68,16 @@ public:
         m_kf = std::make_shared<IESKF>();
         m_builder = std::make_shared<MapBuilder>(m_builder_config, m_kf);
         m_timer = this->create_wall_timer(20ms, std::bind(&LIONode::timerCB, this));
+
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+        transform_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+        double roll = 0.0, pitch = -0.75, yaw = 0.0;
+        Eigen::AngleAxisd rx(roll, Eigen::Vector3d::UnitX());
+        Eigen::AngleAxisd ry(pitch, Eigen::Vector3d::UnitY());
+        Eigen::AngleAxisd rz(yaw, Eigen::Vector3d::UnitZ());
+        m_base_to_livox_r = (rz * ry * rx).toRotationMatrix(); // ZYX order
+        m_base_to_livox_t = Eigen::Vector3d::Zero();
     }
 
     void loadParameters()
@@ -170,43 +183,44 @@ public:
 
     void publishCloud(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub, CloudType::Ptr cloud, std::string frame_id, const double &time)
     {
-        if (pub->get_subscription_count() <= 0)
-            return;
+
         sensor_msgs::msg::PointCloud2 cloud_msg;
         pcl::toROSMsg(*cloud, cloud_msg);
         cloud_msg.header.frame_id = frame_id;
         cloud_msg.header.stamp = Utils::getTime(time);
         pub->publish(cloud_msg);
+        size_t num_points = cloud->size();
+        RCLCPP_INFO(this->get_logger(), "Body cloud point count: %zu", num_points);
     }
 
     void publishOdometry(rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub, std::string frame_id, std::string child_frame, const double &time)
     {
-        if (odom_pub->get_subscription_count() <= 0)
-            return;
-        nav_msgs::msg::Odometry odom;
-        odom.header.frame_id = frame_id;
-        odom.header.stamp = Utils::getTime(time);
-        odom.child_frame_id = child_frame;
-        odom.pose.pose.position.x = m_kf->x().t_wi.x();
-        odom.pose.pose.position.y = m_kf->x().t_wi.y();
-        odom.pose.pose.position.z = m_kf->x().t_wi.z();
-        Eigen::Quaterniond q(m_kf->x().r_wi);
-        odom.pose.pose.orientation.x = q.x();
-        odom.pose.pose.orientation.y = q.y();
-        odom.pose.pose.orientation.z = q.z();
-        odom.pose.pose.orientation.w = q.w();
 
-        V3D vel = m_kf->x().r_wi.transpose() * m_kf->x().v;
-        odom.twist.twist.linear.x = vel.x();
-        odom.twist.twist.linear.y = vel.y();
-        odom.twist.twist.linear.z = vel.z();
-        odom_pub->publish(odom);
+        // nav_msgs::msg::Odometry odom;
+        // odom.header.frame_id = frame_id;
+        // odom.header.stamp = Utils::getTime(time);
+        // odom.child_frame_id = child_frame;
+        // odom.pose.pose.position.x = m_kf->x().t_wi.x();
+        // odom.pose.pose.position.y = m_kf->x().t_wi.y();
+        // odom.pose.pose.position.z = m_kf->x().t_wi.z();
+        // Eigen::Quaterniond q(m_kf->x().r_wi);
+        // odom.pose.pose.orientation.x = q.x();
+        // odom.pose.pose.orientation.y = q.y();
+        // odom.pose.pose.orientation.z = q.z();
+        // odom.pose.pose.orientation.w = q.w();
+
+        // V3D vel = m_kf->x().r_wi.transpose() * m_kf->x().v;
+        // odom.twist.twist.linear.x = vel.x();
+        // odom.twist.twist.linear.y = vel.y();
+        // odom.twist.twist.linear.z = vel.z();
+        // odom_pub->publish(odom);
+
+        
     }
 
     void publishPath(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub, std::string frame_id, const double &time)
     {
-        if (path_pub->get_subscription_count() <= 0)
-            return;
+
         geometry_msgs::msg::PoseStamped pose;
         pose.header.frame_id = frame_id;
         pose.header.stamp = Utils::getTime(time);
@@ -222,7 +236,7 @@ public:
         path_pub->publish(m_state_data.path);
     }
 
-    void broadCastTF(std::shared_ptr<tf2_ros::TransformBroadcaster> broad_caster, std::string frame_id, std::string child_frame, const double &time)
+    void broadCastTF(rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub,std::shared_ptr<tf2_ros::TransformBroadcaster> broad_caster, std::string frame_id, std::string child_frame, const double &time)
     {
         geometry_msgs::msg::TransformStamped transformStamped;
         transformStamped.header.frame_id = frame_id;
@@ -237,7 +251,73 @@ public:
         transformStamped.transform.rotation.y = q.y();
         transformStamped.transform.rotation.z = q.z();
         transformStamped.transform.rotation.w = q.w();
-        broad_caster->sendTransform(transformStamped);
+        // broad_caster->sendTransform(transformStamped);
+
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped.header.stamp = transformStamped.header.stamp;
+        transform_stamped.header.frame_id = "lidar_odom";
+        transform_stamped.child_frame_id = "base_link";
+        static geometry_msgs::msg::TransformStamped livox_to_base_link_transform;
+        static bool transform_acquired = false; // Check if the transform has already been acquired
+        if (!transform_acquired) {
+            // Get the transform from base_link to livox_frame
+            try {
+                livox_to_base_link_transform = tf_buffer_->lookupTransform("livox_frame", "base_link", transformStamped.header.stamp, tf2::durationFromSec(0.001));
+                transform_acquired = true; // Set the flag to true indicating that the transform has been acquired
+            } catch (tf2::TransformException &ex) {
+                return;
+            }
+        }
+        tf2::Transform tf_livox_frame_to_base_link;
+        tf2::fromMsg(livox_to_base_link_transform.transform, tf_livox_frame_to_base_link);
+        tf2::Transform tf_lidar_odom_to_livox_frame;
+        tf2::fromMsg(transformStamped.transform, tf_lidar_odom_to_livox_frame);
+        tf2::Transform tf_lidar_odom_to_base_link = tf_lidar_odom_to_livox_frame * tf_livox_frame_to_base_link;
+        transform_stamped.transform = tf2::toMsg(tf_lidar_odom_to_base_link);
+        
+        broad_caster->sendTransform(transform_stamped);
+
+        nav_msgs::msg::Odometry base_link_odom;
+        base_link_odom.header.frame_id = "lidar_odom";
+        base_link_odom.child_frame_id = "base_link";
+        base_link_odom.header.stamp = transformStamped.header.stamp;
+        base_link_odom.pose.pose.position.x = tf_lidar_odom_to_base_link.getOrigin().x();
+        base_link_odom.pose.pose.position.y = tf_lidar_odom_to_base_link.getOrigin().y();
+        base_link_odom.pose.pose.position.z = tf_lidar_odom_to_base_link.getOrigin().z();
+
+        tf2::Quaternion base_quat = tf_lidar_odom_to_base_link.getRotation();
+        base_link_odom.pose.pose.orientation.x = base_quat.x();
+        base_link_odom.pose.pose.orientation.y = base_quat.y();
+        base_link_odom.pose.pose.orientation.z = base_quat.z();
+        base_link_odom.pose.pose.orientation.w = base_quat.w();
+        odom_pub->publish(base_link_odom);
+        geometry_msgs::msg::TransformStamped heading_to_livox;
+        heading_to_livox.header.stamp = transformStamped.header.stamp;
+        heading_to_livox.header.frame_id = "livox_frame";   // ← 你要求的“航向系”
+        heading_to_livox.child_frame_id = "heading_frame";
+        heading_to_livox.transform.translation.x = 0.0;
+        heading_to_livox.transform.translation.y = 0.0;
+        heading_to_livox.transform.translation.z = 0.0;
+        double roll, pitch, yaw;
+        tf2::Matrix3x3 mat(tf2::Quaternion(
+            q.x(),
+            q.y(),
+            q.z(),
+            q.w()
+        ));
+        mat.getRPY(roll, pitch, yaw);  // 获取当前姿态的欧拉角
+
+        // 构造新四元数：只保留 yaw，roll=0, pitch=0
+        tf2::Quaternion quat_heading;
+        quat_heading.setRPY(-roll, -pitch, 0.0);  // ← 关键！水平化！
+
+        heading_to_livox.transform.rotation.x = quat_heading.getX();
+        heading_to_livox.transform.rotation.y = quat_heading.getY();
+        heading_to_livox.transform.rotation.z = quat_heading.getZ();
+        heading_to_livox.transform.rotation.w = quat_heading.getW();
+
+        // 发布这个“水平航向系”
+        broad_caster->sendTransform(heading_to_livox);
     }
 
     void timerCB()
@@ -257,11 +337,18 @@ public:
         if (m_builder->status() != BuilderStatus::MAPPING)
             return;
 
-        broadCastTF(m_tf_broadcaster, m_node_config.world_frame, m_node_config.body_frame, m_package.cloud_end_time);
+        broadCastTF(m_odom_pub,m_tf_broadcaster, m_node_config.world_frame, m_node_config.body_frame, m_package.cloud_end_time);
 
-        publishOdometry(m_odom_pub, m_node_config.world_frame, m_node_config.body_frame, m_package.cloud_end_time);
+        // publishOdometry(m_odom_pub, m_node_config.world_frame, m_node_config.body_frame, m_package.cloud_end_time);
 
-        CloudType::Ptr body_cloud = m_builder->lidar_processor()->transformCloud(m_package.cloud, m_kf->x().r_il, m_kf->x().t_il);
+        Eigen::Matrix3d r_livox_to_base = m_base_to_livox_r.transpose(); // inverse rotation
+        Eigen::Vector3d t_livox_to_base = -r_livox_to_base * m_base_to_livox_t; // = 0 in your case
+
+        CloudType::Ptr body_cloud = m_builder->lidar_processor()->transformCloud(
+            m_package.cloud, 
+            m_base_to_livox_r.transpose(), 
+            Eigen::Vector3d::Zero()
+        );
 
         publishCloud(m_body_cloud_pub, body_cloud, m_node_config.body_frame, m_package.cloud_end_time);
 
@@ -289,6 +376,11 @@ private:
     std::shared_ptr<IESKF> m_kf;
     std::shared_ptr<MapBuilder> m_builder;
     std::shared_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> transform_listener_;
+
+    Eigen::Matrix3d m_base_to_livox_r;
+    Eigen::Vector3d m_base_to_livox_t;
 };
 
 int main(int argc, char **argv)
