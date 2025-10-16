@@ -190,7 +190,6 @@ public:
         cloud_msg.header.stamp = Utils::getTime(time);
         pub->publish(cloud_msg);
         size_t num_points = cloud->size();
-        RCLCPP_INFO(this->get_logger(), "Body cloud point count: %zu", num_points);
     }
 
     void publishOdometry(rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub, std::string frame_id, std::string child_frame, const double &time)

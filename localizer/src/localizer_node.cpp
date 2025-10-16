@@ -27,6 +27,7 @@ struct NodeConfig
     std::string map_frame = "map";
     std::string local_frame = "lidar";
     double update_hz = 1.0;
+    std::string pcd_path = "";
 };
 
 struct NodeState
@@ -65,13 +66,48 @@ public:
         m_sync->registerCallback(std::bind(&LocalizerNode::syncCB, this, std::placeholders::_1, std::placeholders::_2));
         m_localizer = std::make_shared<ICPLocalizer>(m_localizer_config);
 
-        m_reloc_srv = this->create_service<interface::srv::Relocalize>("relocalize", std::bind(&LocalizerNode::relocCB, this, std::placeholders::_1, std::placeholders::_2));
+        // m_reloc_srv = this->create_service<interface::srv::Relocalize>("relocalize", std::bind(&LocalizerNode::relocCB, this, std::placeholders::_1, std::placeholders::_2));
 
         m_reloc_check_srv = this->create_service<interface::srv::IsValid>("relocalize_check", std::bind(&LocalizerNode::relocCheckCB, this, std::placeholders::_1, std::placeholders::_2));
 
         m_map_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("map_cloud", 10);
 
         m_timer = this->create_wall_timer(10ms, std::bind(&LocalizerNode::timerCB, this));
+
+        std::string pcd_path = m_config.pcd_path;
+        float x = 0.0;
+        float y = 0.0;
+        float z = 0.0;
+        float yaw = 0.0;
+        float roll = 0.0;
+        float pitch = 0.0;
+
+        if (!std::filesystem::exists(pcd_path))
+        {
+            RCLCPP_ERROR(this->get_logger(), "PCD file does not exist: %s", pcd_path.c_str());
+            rclcpp::shutdown();
+            exit(EXIT_FAILURE);
+        }
+
+        Eigen::AngleAxisd yaw_angle = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ());
+        Eigen::AngleAxisd roll_angle = Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+        Eigen::AngleAxisd pitch_angle = Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY());
+        bool load_flag = m_localizer->loadMap(pcd_path);
+        if (!load_flag)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Failed to load PCD map from: %s", pcd_path.c_str());
+            rclcpp::shutdown();
+            exit(EXIT_FAILURE);
+        }
+        {
+            std::lock_guard<std::mutex>(m_state.message_mutex);
+            m_state.initial_guess.setIdentity();
+            m_state.initial_guess.block<3, 3>(0, 0) = (yaw_angle * roll_angle * pitch_angle).toRotationMatrix().cast<float>();
+            m_state.initial_guess.block<3, 1>(0, 3) = V3F(x, y, z);
+            m_state.service_received = true;
+            m_state.localize_success = false;
+        }
+
     }
 
     void loadParameters()
@@ -92,6 +128,7 @@ public:
         m_config.map_frame = config["map_frame"].as<std::string>();
         m_config.local_frame = config["local_frame"].as<std::string>();
         m_config.update_hz = config["update_hz"].as<double>();
+        m_config.pcd_path = config["pcd_path"].as<std::string>();
 
         m_localizer_config.rough_scan_resolution = config["rough_scan_resolution"].as<double>();
         m_localizer_config.rough_map_resolution = config["rough_map_resolution"].as<double>();
@@ -203,46 +240,46 @@ public:
         m_tf_broadcaster->sendTransform(transformStamped);
     }
 
-    void relocCB(const std::shared_ptr<interface::srv::Relocalize::Request> request, std::shared_ptr<interface::srv::Relocalize::Response> response)
-    {
-        std::string pcd_path = request->pcd_path;
-        float x = request->x;
-        float y = request->y;
-        float z = request->z;
-        float yaw = request->yaw;
-        float roll = request->roll;
-        float pitch = request->pitch;
+    // void relocCB(const std::shared_ptr<interface::srv::Relocalize::Request> request, std::shared_ptr<interface::srv::Relocalize::Response> response)
+    // {
+    //     std::string pcd_path = request->pcd_path;
+    //     float x = request->x;
+    //     float y = request->y;
+    //     float z = request->z;
+    //     float yaw = request->yaw;
+    //     float roll = request->roll;
+    //     float pitch = request->pitch;
 
-        if (!std::filesystem::exists(pcd_path))
-        {
-            response->success = false;
-            response->message = "pcd file not found";
-            return;
-        }
+    //     if (!std::filesystem::exists(pcd_path))
+    //     {
+    //         response->success = false;
+    //         response->message = "pcd file not found";
+    //         return;
+    //     }
 
-        Eigen::AngleAxisd yaw_angle = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ());
-        Eigen::AngleAxisd roll_angle = Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
-        Eigen::AngleAxisd pitch_angle = Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY());
-        bool load_flag = m_localizer->loadMap(pcd_path);
-        if (!load_flag)
-        {
-            response->success = false;
-            response->message = "load map failed";
-            return;
-        }
-        {
-            std::lock_guard<std::mutex>(m_state.message_mutex);
-            m_state.initial_guess.setIdentity();
-            m_state.initial_guess.block<3, 3>(0, 0) = (yaw_angle * roll_angle * pitch_angle).toRotationMatrix().cast<float>();
-            m_state.initial_guess.block<3, 1>(0, 3) = V3F(x, y, z);
-            m_state.service_received = true;
-            m_state.localize_success = false;
-        }
+    //     Eigen::AngleAxisd yaw_angle = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ());
+    //     Eigen::AngleAxisd roll_angle = Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+    //     Eigen::AngleAxisd pitch_angle = Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY());
+    //     bool load_flag = m_localizer->loadMap(pcd_path);
+    //     if (!load_flag)
+    //     {
+    //         response->success = false;
+    //         response->message = "load map failed";
+    //         return;
+    //     }
+    //     {
+    //         std::lock_guard<std::mutex>(m_state.message_mutex);
+    //         m_state.initial_guess.setIdentity();
+    //         m_state.initial_guess.block<3, 3>(0, 0) = (yaw_angle * roll_angle * pitch_angle).toRotationMatrix().cast<float>();
+    //         m_state.initial_guess.block<3, 1>(0, 3) = V3F(x, y, z);
+    //         m_state.service_received = true;
+    //         m_state.localize_success = false;
+    //     }
 
-        response->success = true;
-        response->message = "relocalize success";
-        return;
-    }
+    //     response->success = true;
+    //     response->message = "relocalize success";
+    //     return;
+    // }
 
     void relocCheckCB(const std::shared_ptr<interface::srv::IsValid::Request> request, std::shared_ptr<interface::srv::IsValid::Response> response)
     {

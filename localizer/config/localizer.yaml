@@ -1,9 +1,9 @@
 cloud_topic: /fastlio2/body_cloud
-odom_topic: /fastlio2/lio_odom
+odom_topic: /Odometry
 map_frame: map
-local_frame: lidar
+local_frame: odom
 update_hz: 1.0
-
+pcd_path: "/home/robot/diskhome/nav_sem/nav_ws/src/PB_RMSimulation/src/rm_nav_bringup/map/map.pcd"
 rough_scan_resolution: 0.25
 rough_map_resolution: 0.25
 rough_max_iteration: 5
