@@ -218,7 +218,7 @@ public:
         if (!m_state.message_received)
         {
             m_state.message_received = true;
-            m_config.local_frame = odom_msg->header.frame_id;
+            // m_config.local_frame = odom_msg->header.frame_id;
         }
     }
 

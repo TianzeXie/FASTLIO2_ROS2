@@ -14,10 +14,10 @@ cube_len: 1000
 det_range: 100
 move_thresh: 1.5
 
-na: 0.05
-ng: 0.05
-nba: 0.0005
-nbg: 0.0005
+na: 0.02
+ng: 0.02
+nba: 0.0002
+nbg: 0.0002
 
 imu_init_num: 15
 near_search_num: 5
