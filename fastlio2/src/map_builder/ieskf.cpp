@@ -75,7 +75,7 @@ void IESKF::predict(const Input &inp, double dt, const M12D &Q)
     m_P = m_F * m_P * m_F.transpose() + m_G * Q * m_G.transpose();
 }
 
-void IESKF::update()
+void IESKF::update(rclcpp::Node::SharedPtr node)
 {
     State predict_x = m_x;
     SharedState shared_data;
@@ -87,7 +87,9 @@ void IESKF::update()
 
     for (size_t i = 0; i < m_max_iter; i++)
     {
+        RCLCPP_INFO(node->get_logger(), "start loss function iteration %zu", i);
         m_loss_func(m_x, shared_data);
+        RCLCPP_INFO(node->get_logger(), "stop loss function iteration %zu", i);
         if (!shared_data.valid)
             break;
         H.setZero();
@@ -109,6 +111,7 @@ void IESKF::update()
 
         if (m_stop_func(delta))
             break;
+        RCLCPP_INFO(node->get_logger(), "matrix calc end %zu", i);
     }
 
     M21D L = M21D::Identity();

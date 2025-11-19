@@ -1,5 +1,5 @@
 #include "lidar_processor.h"
-
+#include <omp.h>
 LidarProcessor::LidarProcessor(Config &config, std::shared_ptr<IESKF> kf) : m_config(config), m_kf(kf)
 {
     m_ikdtree = std::make_shared<KD_TREE<PointType>>();
@@ -150,7 +150,7 @@ void LidarProcessor::initCloudMap(PointVec &point_vec)
     m_ikdtree->Build(point_vec);
 }
 
-void LidarProcessor::process(SyncPackage &package)
+void LidarProcessor::process(SyncPackage &package, rclcpp::Node::SharedPtr node)
 {
     // m_kf->setLossFunction([&](State &s, SharedState &d)
     //                       { updateLossFunc(s, d); });
@@ -160,6 +160,7 @@ void LidarProcessor::process(SyncPackage &package)
     //                         return (rot_delta.norm() * 57.3 < 0.01) && (t_delta.norm() * 100 < 0.015); });
     if (m_config.scan_resolution > 0.0)
     {
+        RCLCPP_INFO(node->get_logger(), "start downsample lidar scan");
         m_scan_filter.setInputCloud(package.cloud);
         m_scan_filter.filter(*m_cloud_down_lidar);
     }
@@ -167,18 +168,22 @@ void LidarProcessor::process(SyncPackage &package)
     {
         pcl::copyPointCloud(*package.cloud, *m_cloud_down_lidar);
     }
+    RCLCPP_INFO(node->get_logger(), "cloud size: %d", m_cloud_down_lidar->size());
     trimCloudMap();
-    m_kf->update();
+    RCLCPP_INFO(node->get_logger(), "start update lidar odometry");
+    m_kf->update(node);
     incrCloudMap();
+    RCLCPP_INFO(node->get_logger(), "lidar process done");
 }
 
 void LidarProcessor::updateLossFunc(State &state, SharedState &share_data)
 {
     int size = m_cloud_down_lidar->size();
-#ifdef MP_EN
-    omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for
-#endif
+// #ifdef MP_EN
+    int num_threads = std::min(12, omp_get_num_procs());
+    omp_set_num_threads(num_threads);
+#pragma omp parallel for schedule(guided)
+// #endif
     for (int i = 0; i < size; i++)
     {
         PointType &point_body = m_cloud_down_lidar->points[i];

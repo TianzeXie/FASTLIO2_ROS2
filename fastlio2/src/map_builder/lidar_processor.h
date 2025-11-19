@@ -4,6 +4,7 @@
 #include "ikd_Tree.h"
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/common/transforms.h>
+#include <chrono>
 
 struct LocalMap
 {
@@ -23,7 +24,7 @@ public:
 
     void initCloudMap(PointVec &point_vec);
 
-    void process(SyncPackage &package);
+    void process(SyncPackage &package, rclcpp::Node::SharedPtr node);
 
     void updateLossFunc(State &state, SharedState &share_data);
 

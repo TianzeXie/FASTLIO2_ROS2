@@ -6,10 +6,10 @@ update_hz: 1.0
 pcd_path: "/home/robot/diskhome/nav_sem/nav_ws/src/PB_RMSimulation/src/rm_nav_bringup/map/map.pcd"
 rough_scan_resolution: 0.25
 rough_map_resolution: 0.25
-rough_max_iteration: 5
-rough_score_thresh: 0.2
+rough_max_iteration: 6
+rough_score_thresh: 0.1 
 
 refine_scan_resolution: 0.1
 refine_map_resolution: 0.1
 refine_max_iteration: 10
-refine_score_thresh: 0.1
+refine_score_thresh: 0.05

@@ -2,6 +2,7 @@
 #include <Eigen/Eigen>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <rclcpp/rclcpp.hpp>
 
 using PointType = pcl::PointXYZINormal;
 using CloudType = pcl::PointCloud<PointType>;

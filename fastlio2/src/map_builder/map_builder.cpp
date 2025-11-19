@@ -6,7 +6,7 @@ MapBuilder::MapBuilder(Config &config, std::shared_ptr<IESKF> kf) : m_config(con
     m_status = BuilderStatus::IMU_INIT;
 }
 
-void MapBuilder::process(SyncPackage &package)
+void MapBuilder::process(SyncPackage &package, rclcpp::Node::SharedPtr node)
 {
     if (m_status == BuilderStatus::IMU_INIT)
     {
@@ -25,5 +25,5 @@ void MapBuilder::process(SyncPackage &package)
         return;
     }
     
-    m_lidar_processor->process(package);
+    m_lidar_processor->process(package, node);
 }

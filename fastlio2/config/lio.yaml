@@ -2,7 +2,7 @@ imu_topic: /livox/imu
 lidar_topic: /livox/lidar
 body_frame: base_link
 world_frame: lidar_odom
-print_time_cost: false
+print_time_cost: true
 
 lidar_filter_num: 3
 lidar_min_range: 0.5
@@ -10,16 +10,16 @@ lidar_max_range: 20.0
 scan_resolution: 0.15
 map_resolution: 0.3
 
-cube_len: 1000
-det_range: 100
+cube_len: 300
+det_range: 60
 move_thresh: 1.5
 
-na: 0.02
-ng: 0.02
-nba: 0.0002
-nbg: 0.0002
+na: 0.01
+ng: 0.01
+nba: 0.0001
+nbg: 0.0001
 
-imu_init_num: 15
+imu_init_num: 20
 near_search_num: 5
 ieskf_max_iter: 5
 

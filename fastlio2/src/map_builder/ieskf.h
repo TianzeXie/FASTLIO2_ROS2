@@ -67,7 +67,7 @@ public:
 
     void predict(const Input &inp, double dt, const M12D &Q);
 
-    void update();
+    void update(rclcpp::Node::SharedPtr node);
 
     State &x() { return m_x; }
 

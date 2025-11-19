@@ -53,13 +53,13 @@ public:
         RCLCPP_INFO(this->get_logger(), "LIO Node Started");
         loadParameters();
 
-        m_imu_sub = this->create_subscription<sensor_msgs::msg::Imu>(m_node_config.imu_topic, 10, std::bind(&LIONode::imuCB, this, std::placeholders::_1));
-        m_lidar_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(m_node_config.lidar_topic, 10, std::bind(&LIONode::lidarCB, this, std::placeholders::_1));
+        m_imu_sub = this->create_subscription<sensor_msgs::msg::Imu>(m_node_config.imu_topic, 5, std::bind(&LIONode::imuCB, this, std::placeholders::_1));
+        m_lidar_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(m_node_config.lidar_topic, 5, std::bind(&LIONode::lidarCB, this, std::placeholders::_1));
 
-        m_body_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("body_cloud", 10000);
-        m_world_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("world_cloud", 10000);
-        m_path_pub = this->create_publisher<nav_msgs::msg::Path>("lio_path", 10000);
-        m_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 10000);
+        m_body_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("body_cloud", 5);
+        // m_world_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("world_cloud", 10);
+        // m_path_pub = this->create_publisher<nav_msgs::msg::Path>("lio_path", 10000);
+        m_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 5);
         m_tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
         m_state_data.path.poses.clear();
@@ -168,7 +168,10 @@ public:
             m_state_data.lidar_pushed = true;
         }
         if (m_state_data.last_imu_time < m_package.cloud_end_time)
+        {
+            RCLCPP_WARN(this->get_logger(), "imu message late about Lidar Message");
             return false;
+        }
 
         Vec<IMUData>().swap(m_package.imus);
         while (!m_state_data.imu_buffer.empty() && m_state_data.imu_buffer.front().time < m_package.cloud_end_time)
@@ -241,6 +244,7 @@ public:
         transformStamped.header.frame_id = frame_id;
         transformStamped.child_frame_id = child_frame;
         transformStamped.header.stamp = Utils::getTime(time);
+        RCLCPP_INFO(this->get_logger(), "Broadcasting TF at time: %.3f", time);
         Eigen::Quaterniond q(m_kf->x().r_wi);
         V3D t = m_kf->x().t_wi;
         transformStamped.transform.translation.x = t.x();
@@ -324,17 +328,20 @@ public:
         if (!syncPackage())
             return;
         auto t1 = std::chrono::high_resolution_clock::now();
-        m_builder->process(m_package);
+        m_builder->process(m_package, this->shared_from_this());
         auto t2 = std::chrono::high_resolution_clock::now();
 
         if (m_node_config.print_time_cost)
         {
             auto time_used = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count() * 1000;
-            RCLCPP_WARN(this->get_logger(), "Time cost: %.2f ms", time_used);
+            RCLCPP_INFO(this->get_logger(), "Time cost: %.2f ms", time_used);
         }
 
         if (m_builder->status() != BuilderStatus::MAPPING)
+        {
+            RCLCPP_WARN(this->get_logger(), "status is not MAPPING");
             return;
+        }
 
         broadCastTF(m_odom_pub,m_tf_broadcaster, m_node_config.world_frame, m_node_config.body_frame, m_package.cloud_end_time);
 
@@ -351,11 +358,11 @@ public:
 
         publishCloud(m_body_cloud_pub, body_cloud, m_node_config.body_frame, m_package.cloud_end_time);
 
-        CloudType::Ptr world_cloud = m_builder->lidar_processor()->transformCloud(m_package.cloud, m_builder->lidar_processor()->r_wl(), m_builder->lidar_processor()->t_wl());
+        // CloudType::Ptr world_cloud = m_builder->lidar_processor()->transformCloud(m_package.cloud, m_builder->lidar_processor()->r_wl(), m_builder->lidar_processor()->t_wl());
 
-        publishCloud(m_world_cloud_pub, world_cloud, m_node_config.world_frame, m_package.cloud_end_time);
+        // publishCloud(m_world_cloud_pub, world_cloud, m_node_config.world_frame, m_package.cloud_end_time);
 
-        publishPath(m_path_pub, m_node_config.world_frame, m_package.cloud_end_time);
+        // publishPath(m_path_pub, m_node_config.world_frame, m_package.cloud_end_time);
     }
 
 private:
@@ -364,7 +371,7 @@ private:
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_body_cloud_pub;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_world_cloud_pub;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr m_path_pub;
+    // rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr m_path_pub;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_pub;
 
     rclcpp::TimerBase::SharedPtr m_timer;

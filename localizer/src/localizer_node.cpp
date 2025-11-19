@@ -46,6 +46,9 @@ struct NodeState
     M3D last_offset_r = M3D::Identity(); // map_localmap_r
     V3D last_offset_t = V3D::Zero();     // map_localmap_t
     M4F initial_guess = M4F::Identity();
+    // 添加原始速度信息存储
+    V3D last_linear_velocity;    // body frame下的线速度
+    V3D last_angular_velocity;   // body frame下的角速度
 };
 
 class LocalizerNode : public rclcpp::Node
@@ -65,14 +68,14 @@ public:
         m_sync->setAgePenalty(0.1);
         m_sync->registerCallback(std::bind(&LocalizerNode::syncCB, this, std::placeholders::_1, std::placeholders::_2));
         m_localizer = std::make_shared<ICPLocalizer>(m_localizer_config);
-
+        m_corrected_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("/odom_corrected", 10);
         // m_reloc_srv = this->create_service<interface::srv::Relocalize>("relocalize", std::bind(&LocalizerNode::relocCB, this, std::placeholders::_1, std::placeholders::_2));
 
         m_reloc_check_srv = this->create_service<interface::srv::IsValid>("relocalize_check", std::bind(&LocalizerNode::relocCheckCB, this, std::placeholders::_1, std::placeholders::_2));
 
         m_map_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("map_cloud", 10);
 
-        m_timer = this->create_wall_timer(10ms, std::bind(&LocalizerNode::timerCB, this));
+        m_timer = this->create_wall_timer(20ms, std::bind(&LocalizerNode::timerCB, this));
 
         std::string pcd_path = m_config.pcd_path;
         float x = 0.0;
@@ -108,6 +111,8 @@ public:
             m_state.localize_success = false;
         }
 
+        m_state.last_linear_velocity = V3D::Zero();
+        m_state.last_angular_velocity = V3D::Zero();
     }
 
     void loadParameters()
@@ -197,7 +202,7 @@ public:
             }
         }
         sendBroadCastTF(current_time);
-        publishMapCloud(current_time);
+        // publishMapCloud(current_time);
     }
     void syncCB(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &cloud_msg, const nav_msgs::msg::Odometry::ConstSharedPtr &odom_msg)
     {
@@ -214,7 +219,16 @@ public:
         m_state.last_t = V3D(odom_msg->pose.pose.position.x,
                              odom_msg->pose.pose.position.y,
                              odom_msg->pose.pose.position.z);
+
+        m_state.last_linear_velocity = V3D(odom_msg->twist.twist.linear.x,
+                                           odom_msg->twist.twist.linear.y,
+                                           odom_msg->twist.twist.linear.z);
+        m_state.last_angular_velocity = V3D(odom_msg->twist.twist.angular.x,
+                                            odom_msg->twist.twist.angular.y,
+                                            odom_msg->twist.twist.angular.z);
+        
         m_state.last_message_time = cloud_msg->header.stamp;
+        // RCLCPP_INFO(this->get_logger(), "[odom1] time: %d.%d", cloud_msg->header.stamp.sec, cloud_msg->header.stamp.nanosec);
         if (!m_state.message_received)
         {
             m_state.message_received = true;
@@ -227,7 +241,7 @@ public:
         geometry_msgs::msg::TransformStamped transformStamped;
         transformStamped.header.frame_id = m_config.map_frame;
         transformStamped.child_frame_id = m_config.local_frame;
-        transformStamped.header.stamp = time;
+        transformStamped.header.stamp = this->now();
         Eigen::Quaterniond q(m_state.last_offset_r);
         V3D t = m_state.last_offset_t;
         transformStamped.transform.translation.x = t.x();
@@ -238,6 +252,58 @@ public:
         transformStamped.transform.rotation.z = q.z();
         transformStamped.transform.rotation.w = q.w();
         m_tf_broadcaster->sendTransform(transformStamped);
+        publishCorrectedOdom(time);
+    }
+    void publishCorrectedOdom(const builtin_interfaces::msg::Time &time)
+    {
+        // if (m_corrected_odom_pub->get_subscription_count() == 0)
+        //     return;
+
+        // 计算 map 到 body 的位姿
+        M3D map_body_r;
+        V3D map_body_t;
+        V3D linear_velocity_body, angular_velocity_body;
+        {
+            std::lock_guard<std::mutex> lock(m_state.message_mutex);
+            // T_map_body = T_map_localmap * T_localmap_body
+            // T_localmap_body 由 last_r, last_t 给出（来自 odom）
+            map_body_r = m_state.last_offset_r * m_state.last_r;
+            map_body_t = m_state.last_offset_r * m_state.last_t + m_state.last_offset_t;
+            
+            // 获取原始速度（body frame下）
+            linear_velocity_body = m_state.last_linear_velocity;
+            angular_velocity_body = m_state.last_angular_velocity;
+        }
+
+        nav_msgs::msg::Odometry odom_msg;
+        odom_msg.header.stamp = time;
+        odom_msg.header.frame_id = "map";
+        odom_msg.child_frame_id = "base_link"; // 或根据你的机器人设置，比如 "body"
+        // RCLCPP_INFO(this->get_logger(), "[odom] time: %d.%d", time.sec, time.nanosec);
+        // Position
+        odom_msg.pose.pose.position.x = map_body_t.x();
+        odom_msg.pose.pose.position.y = map_body_t.y();
+        odom_msg.pose.pose.position.z = map_body_t.z();
+
+        // Orientation
+        Eigen::Quaterniond q(map_body_r);
+        odom_msg.pose.pose.orientation.x = q.x();
+        odom_msg.pose.pose.orientation.y = q.y();
+        odom_msg.pose.pose.orientation.z = q.z();
+        odom_msg.pose.pose.orientation.w = q.w();
+
+        V3D linear_velocity_map = map_body_r * linear_velocity_body;
+        V3D angular_velocity_map = map_body_r * angular_velocity_body;
+        
+        odom_msg.twist.twist.linear.x = linear_velocity_map.x();
+        odom_msg.twist.twist.linear.y = linear_velocity_map.y();
+        odom_msg.twist.twist.linear.z = linear_velocity_map.z();
+        
+        odom_msg.twist.twist.angular.x = angular_velocity_map.x();
+        odom_msg.twist.twist.angular.y = angular_velocity_map.y();
+        odom_msg.twist.twist.angular.z = angular_velocity_map.z();
+
+        m_corrected_odom_pub->publish(odom_msg);
     }
 
     // void relocCB(const std::shared_ptr<interface::srv::Relocalize::Request> request, std::shared_ptr<interface::srv::Relocalize::Response> response)
@@ -318,6 +384,7 @@ private:
     rclcpp::Service<interface::srv::Relocalize>::SharedPtr m_reloc_srv;
     rclcpp::Service<interface::srv::IsValid>::SharedPtr m_reloc_check_srv;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_map_cloud_pub;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_corrected_odom_pub;
 };
 int main(int argc, char **argv)
 {
